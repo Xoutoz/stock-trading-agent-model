@@ -1,0 +1,21 @@
+{
+    "name": "Subject",
+    "image": "mcr.microsoft.com/devcontainers/python:3.10",
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-toolsai.python-ds-extension-pack"
+            ],
+            "settings": {
+                "python.defaultInterpreterPath": "/usr/local/bin/python",
+                "jupyter.jupyterServerType": "local",
+                "terminal.integrated.shell.linux": "/bin/bash"
+            }
+        }
+    },
+    "postCreateCommand": "bash ./.devcontainer/install_dependencies.sh",
+    "runArgs": [
+        "--name",
+        "subject-playbook"
+    ]
+}

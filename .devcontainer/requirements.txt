@@ -1,0 +1,10 @@
+ipykernel
+ipython
+jupyter
+matplotlib
+numpy
+pandas
+pillow
+scipy
+requests
+pyarrow
