@@ -7,7 +7,7 @@
                 "ms-toolsai.python-ds-extension-pack"
             ],
             "settings": {
-                "python.defaultInterpreterPath": "/usr/local/bin/python",
+                "python.defaultInterpreterPath": "./.venv/bin/python",
                 "jupyter.jupyterServerType": "local",
                 "terminal.integrated.shell.linux": "/bin/bash"
             }

@@ -8,3 +8,11 @@ pillow
 scipy
 requests
 pyarrow
+gymnasium
+gym_anytrading
+yfinance
+quantstats
+stable_baselines3
+tqdm
+rich
+ipywidgets
