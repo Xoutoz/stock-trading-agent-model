@@ -16,3 +16,6 @@ stable_baselines3
 tqdm
 rich
 ipywidgets
+torch
+torchvision
+torchaudio
