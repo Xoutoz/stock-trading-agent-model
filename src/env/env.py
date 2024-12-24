@@ -38,7 +38,8 @@ class CustomStockEnv(StocksEnv):
 
         return self.unwrapped.max_possible_profit()
 
-    def get_data(self):
+    @property
+    def data(self):
         """
         Retrieves a copy of the internal dataframe.
         Returns:
@@ -65,22 +66,16 @@ class CustomStockEnv(StocksEnv):
 
 if __name__ == '__main__':
     # Simple test to check if the environment is working
-    df = yf.Ticker('KO').history(start='2020-01-01', end='2021-01-01')
+    df = yf.Ticker('KO').history(start='2019-01-01', end='2024-10-31')
     print(len(df))
     print('----------------------------------------')
 
     env = CustomStockEnv(df)
-    print(env.action_space)
-    print(len(env.df))
-    print(env.observation_space)
     print(env.metadata)
-    print(env.unwrapped.max_possible_profit())
+    print(env.get_max_possible_profit())
 
     print('----------------------------------------')
 
-    env = CustomStockEnv.build_from_symbol('2020-01-01', '2021-01-01')
-    print(env.action_space)
-    print(len(env.df))
-    print(env.observation_space)
+    env = CustomStockEnv.build_from_symbol('2019-01-01', '2024-12-31')
     print(env.metadata)
-    print(env.unwrapped.max_possible_profit())
+    print(env.get_max_possible_profit())

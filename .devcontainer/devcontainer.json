@@ -16,6 +16,6 @@
     "postCreateCommand": "bash ./.devcontainer/install_dependencies.sh",
     "runArgs": [
         "--name",
-        "subject-playbook"
+        "oeod-subject-playbook"
     ]
 }

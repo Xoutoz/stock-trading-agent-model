@@ -2,19 +2,25 @@ import numpy as np
 import gymnasium as gym
 from itertools import product
 
-from q_learning_agent import QLearningAgent
-from env import CustomStockEnv
-from utils import calculate_entry_points
+import sys
+import os
+
+# Add the src directory to the system path
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
+
+from src.agent.q_learning_agent import QLearningAgent
+from src.env.env import CustomStockEnv
+from src.utils.strategy import Strategy
 
 class QLearningTuningEnv(gym.Env):
-    def __init__(self, max_episodes):
+    def __init__(self, strategy: Strategy, max_episodes):
         super(QLearningTuningEnv, self).__init__()
 
-        self.__task_env = CustomStockEnv.build_from_symbol(start_date="2019-01-01", end_date="2024-10-31")
-        self.__entry_points = calculate_entry_points(self.__task_env.get_data(), "EMA", (50, 200))
+        self.__agent_env = CustomStockEnv.build_from_symbol(start_date="2019-01-01", end_date="2024-10-31")
+        self.__entry_points = strategy.entry_points
         self.__best_reward = -np.inf
-        self.__initial_investment = 10_000
-        self.__risk_free_rate = 0.0456 / 365
+        self.__initial_investment = 5_000
+        self.__symbol_risk_free_rate = strategy.risk
 
         # Meta-episode tracking
         self.__max_episodes = max_episodes
@@ -58,15 +64,17 @@ class QLearningTuningEnv(gym.Env):
 
         # Train Q-learning agent
         q_agent = QLearningAgent(
+            env=self.__agent_env,
+            entry_points=self.__entry_points,
             alpha=alpha,
             gamma=gamma,
             epsilon_min=epsilon_min,
             epsilon_decay=epsilon_decay,
             lambda_min=lambda_min,
             lambda_decay=lambda_decay,
-            daily_risk_free_rate=self.__risk_free_rate
+            symbol_risk_free_rate=self.__symbol_risk_free_rate
         )
-        total_reward, _, __ = q_agent.train(self.__task_env.get_data(), self.__entry_points, initial_investment=self.__initial_investment, num_episodes=500)
+        total_reward, _, __ = q_agent.learn(initial_investment=self.__initial_investment, num_episodes=1000)
 
         # Update episode counter
         self.current_episode += 1
@@ -95,9 +103,12 @@ if __name__ == "__main__":
     device = torch.device("mps") if torch.backends.mps.is_available() else torch.device("cpu")
     print(f"Using device: {device}")
 
+    from src.utils.macd_strategy import MACDStrategy
+    strategy = MACDStrategy(CustomStockEnv.build_from_symbol(start_date="2019-01-01", end_date="2024-10-31"))
+    strategy.apply_strategy(initial_investment=10_000)
 
     # Create the meta-environment
-    meta_env = DummyVecEnv([lambda: QLearningTuningEnv(max_episodes=10)])
+    meta_env = DummyVecEnv([lambda: QLearningTuningEnv(strategy=strategy, max_episodes=10)])
 
     # Create and train the PPO agent
     ppo_agent = PPO(
@@ -107,7 +118,7 @@ if __name__ == "__main__":
         device=device,
         verbose=1
     )
-    ppo_agent.learn(total_timesteps=100)
+    ppo_agent.learn(total_timesteps=50)
 
     # Get the best hyperparameters from the trained PPO agent
     obs = meta_env.envs[0].observation_space.sample()

@@ -3,25 +3,41 @@ import pandas as pd
 import pickle
 from typing import List, Tuple
 
-from action import Action
-from state import State
+import sys
+import os
+
+# Add the src directory to the system path
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
+
+from src.utils.action import Action
+from src.utils.state import State
+from src.env.env import CustomStockEnv
+
 
 class QLearningAgent:
-    def __init__(self, alpha: float = 0.2, gamma: float = 0.9, epsilon_min: float = 0.01, epsilon_decay: float = 0.995, lambda_min: float = 0.01, lambda_decay: float = 0.995, daily_risk_free_rate: float = 0.0):
+    def __init__(self, env: CustomStockEnv, entry_points: Tuple[str, Action], alpha: float = 0.2, gamma: float = 0.9,
+                 epsilon_min: float = 0.01, epsilon_decay: float = 0.995, lambda_min: float = 0.01,
+                 lambda_decay: float = 0.995, symbol_risk_free_rate: float = 0.0, model_name: str = 'q_learning'):
         """
         Initialize the QLearningAgent.
         Parameters:
-        alpha (float): Learning rate for the Q-learning algorithm. Default is 0.2.
-        gamma (float): Discount factor for future rewards. Default is 0.9.
-        epsilon_min (float): Minimum exploration rate for the epsilon-greedy policy. Default is 0.01.
-        epsilon_decay (float): Decay rate for the exploration rate. Default is 0.995.
-        lambda_min (float): Minimum value for the human feedback parameter. Default is 0.01.
-        lambda_decay (float): Decay rate for the human feedback parameter. Default is 0.995.
-        daily_risk_free_rate (float): Daily risk-free rate for financial calculations. Default is 0.0.
+        env (CustomStockEnv): The custom stock trading environment.
+        entry_points (Tuple[str, Action]): The entry points for the agent (human feedback).
+        alpha (float, optional): Learning rate for Q-learning. Default is 0.2.
+        gamma (float, optional): Discount factor for Q-learning. Default is 0.9.
+        epsilon_min (float, optional): Minimum exploration rate. Default is 0.01.
+        epsilon_decay (float, optional): Decay rate for exploration. Default is 0.995.
+        lambda_min (float, optional): Minimum value for human feedback parameter. Default is 0.01.
+        lambda_decay (float, optional): Decay rate for human feedback parameter. Default is 0.995.
+        daily_risk_free_rate (float, optional): Daily risk-free rate. Default is 0.0.
         """
 
+
+        self.__env = env
+        self.__entry_points = entry_points
+
         # Agent possible states and actions
-        self.__actions: List[Action] = [Action.HOLD, Action.BUY, Action.SELL]
+        self.__actions: List[Action] = [Action.BUY, Action.SELL]
         self.__states: List[State] = [State.IN_MARKET, State.NOT_IN_MARKET]
 
         # Q-learning hyper parameters
@@ -36,20 +52,18 @@ class QLearningAgent:
         self.__lambda_min: float = lambda_min
         self.__lambda_decay: float = lambda_decay
 
-
         # Financial hyper parameters
-        self.__daily_risk_free_rate: float = daily_risk_free_rate # Risk-free rate
+        self.__symbol_risk_free_rate: float = symbol_risk_free_rate # Risk-free rate
+        self.__daily_risk_free_rate: float = symbol_risk_free_rate / 365 # Risk-free rate
 
-        # Financial variables
-        self.__portfolio_value: List[float] = []
-        self.__trades: List[Tuple] = []
+        # Acumulated reward
         self.__total_reward: float = 0.0
 
         # Q-Table
         self.__q_table: np.ndarray = np.zeros((len(self.__states), len(self.__actions)))
 
         # Technical parameters
-        self.__q_table_filename: str = f"models/q_learning/q_table_alpha_{self.__alpha}_gamma_{self.__gamma}_epsilon_{self.__epsilon}_risk_{self.__daily_risk_free_rate}.pickle"
+        self.__q_table_filename: str = f"models/q_learning/{model_name}_q_table.pkl"
 
     def __update_q_table(self, state: State, action: Action, reward: float, next_state: State):
         """
@@ -96,13 +110,38 @@ class QLearningAgent:
 
         return (expected_return - self.__daily_risk_free_rate) / daily_volatility if expected_return != 0.0 else 0
 
-    # Define the trading strategy with Q-learning and human feedback
-    def train(self, data: pd.Series, entry_points: dict, initial_investment: float, num_episodes: int = 10_000):
+    def __execute_action(self, action: Action, state: State, portfolio_balance: float, shares: int, market_day: pd.Series):
         """
-        Train the Q-learning agent on historical stock data.
+        Execute the action based on the current state.
+        Args:
+            action (Action): The action to execute.
+            state (State): The current state of the environment.
+            portfolio_balance (float): The current balance of the portfolio.
+            shares (int): The number of shares held in the portfolio.
+            market_day (pd.Series): The current market day data.
+        Returns:
+            Tuple[float, int]: A tuple containing the updated portfolio balance and number of shares.
+        """
+
+        if action == Action.BUY and state == State.NOT_IN_MARKET:
+            state = State.IN_MARKET
+            if portfolio_balance >= market_day.Close:
+                shares += portfolio_balance // market_day.Close
+                portfolio_balance -= shares * market_day.Close
+
+        elif action == Action.SELL and state == State.IN_MARKET:
+            state = State.NOT_IN_MARKET
+            portfolio_balance += shares * market_day.Close
+            shares = 0
+
+        return state, portfolio_balance, shares
+
+
+    # Define the trading strategy with Q-learning and human feedback
+    def learn(self, initial_investment: float, num_episodes: int = 10_000, verbose: bool = False):
+        """
+        Train the Q-learning agent on stock data.
         Parameters:
-        data (pd.Series): Time-series data of stock prices.
-        entry_points (dict): Dictionary with dates as keys and 'BUY' or 'SELL' as values indicating entry points.
         initial_investment (float): Initial amount of money to start trading with.
         num_episodes (int, optional): Number of training episodes. Default is 10,000.
         Returns:
@@ -112,81 +151,64 @@ class QLearningAgent:
             - trades (list): List of executed trades with details.
         """
 
+        data = self.__env.data
+
         for episode in range(num_episodes):
-            self.__total_reward = 0.0               # Track total reward
-            portfolio_value = [initial_investment]  # Track portfolio value
-            current_balance = initial_investment
-            trades = []                             # Track executed trades
-            reward = 0.0                            # Initialize reward
-            shares = 0                              # Initialize shares
-            previous_day_quotation = 0
-            update_reward = False
+            self.__total_reward = 0
+            portfolio_balance = initial_investment
+            portfolio_value = [portfolio_balance]
+            trades = []
+            shares = 0
+
+            reward = 0
+            previous_market_day = None
 
             # Iterate time-series
             for market_day in data.itertuples():
+                # Get market day
                 day = str(market_day.Index)[:10]
 
-                if market_day.Index == data.index[0]:
-                    state = State.NOT_IN_MARKET
-                    action = Action.BUY
-                else:
-                    state = State.NOT_IN_MARKET if portfolio_value[-1] == 0 else State.IN_MARKET  # Current state
+                # Get the current state
+                state = State.NOT_IN_MARKET if portfolio_balance < market_day.Close or previous_market_day is None else State.IN_MARKET
 
-                    if day in entry_points and np.random.uniform() < self.__lambda:
-                        if entry_points[day] == 'BUY':
-                            action = Action.BUY
-                            state = State.NOT_IN_MARKET
-                        else:
-                            action = Action.SELL
-                            state = State.IN_MARKET
-                    else:
-                        action =  self.__choose_action(state)
+                # Get the recommended action
+                if day in self.__entry_points and np.random.uniform() < self.__lambda:
+                    action = self.__entry_points[day]
 
-                if action == Action.BUY and state == State.NOT_IN_MARKET and current_balance > market_day.Close:
-                    state = State.IN_MARKET
-                    shares += current_balance // market_day.Close  # Buy as many shares as possible
-                    shares_liquidation = -1 * (shares * market_day.Close)
-                    current_balance += shares_liquidation
-                    portfolio_value.append(portfolio_value[-1])
-                    trades.append((action.name, day, round(market_day.Close, 2), shares, 0))
-                    update_reward = True
+                    # Execute the recommended action
+                    state, portfolio_balance, shares = self.__execute_action(action, state, portfolio_balance, shares, market_day)
+                    trades.append((day, action, round(market_day.Close, 2), shares, round(portfolio_balance, 2)))
 
-                elif action == Action.SELL and state == State.IN_MARKET and shares > 0:
-                    state = State.NOT_IN_MARKET  # Exit the market
-                    shares_liquidation = shares * market_day.Close
-                    profit = shares_liquidation - current_balance
-                    current_balance += shares_liquidation
-                    portfolio_value.append(portfolio_value[-1] + (current_balance - portfolio_value[-1]))
-                    trades.append((action.name, day, round(market_day.Close, 2), shares, profit, shares_liquidation, current_balance))
-                    shares = 0  # Sell all shares
-                    update_reward = True
-
-                else:
-                    state = State.NOT_IN_MARKET
-                    action = Action.HOLD
-                    portfolio_value.append(portfolio_value[-1])
-                    reward = 0
-                    update_reward = False
-
-
-                if market_day.Index != data.index[0] and update_reward:
-                    reward = self.__calculate_reward(previous_day_quotation, market_day.Close)
+                # Calculate the reward
+                reward = self.__calculate_reward(portfolio_balance, portfolio_value[-1]) if previous_market_day else 0
                 self.__total_reward += reward
+
+                # Choose an action based on the current state
+                action = self.__choose_action(state)
+
+                # Execute the action
+                state, portfolio_balance, shares = self.__execute_action(action, state, portfolio_balance, shares, market_day)
+                trades.append((day, action, round(market_day.Close, 2), shares, round(portfolio_balance, 2)))
 
                 # Update the Q-table
                 next_state = State.NOT_IN_MARKET if state == State.NOT_IN_MARKET else State.IN_MARKET  # Next state
                 self.__update_q_table(state, action, reward, next_state)
 
-                previous_day_quotation = market_day.Close
+                # Update the portfolio value
+                portfolio_value.append(shares * market_day.Close + portfolio_balance)
 
+                previous_market_day = market_day
+
+            # Decay exponentially epsilon value
             if self.__epsilon > self.__epsilon_min:
-                self.__epsilon -= self.__epsilon_decay
+                self.__epsilon *= self.__epsilon_decay
 
+            # Decay exponentially human feedback parameter
             if self.__lambda > self.__lambda_min:
                 self.__lambda -= self.__lambda_decay
 
-            # if episode == 0 or episode % 500 == 499:
-            #     print(f"Episode {episode + 1} of {num_episodes} finished.")
+            if verbose and (episode == 0 or episode % 500 == 499):
+                print(f"Episode {episode + 1} of {num_episodes} finished.")
 
         return self.__total_reward, portfolio_value, trades
 
@@ -219,7 +241,8 @@ class QLearningAgent:
         except FileNotFoundError:
             print("Model not found. Please train the model first.")
 
-    def get_q_table(self):
+    @property
+    def q_table(self):
         """
         Retrieve the Q-table used by the agent.
         Returns:
@@ -231,37 +254,41 @@ class QLearningAgent:
 if __name__ == '__main__':
     from matplotlib import pyplot as plt
 
-    from env import CustomStockEnv
-    from utils import calculate_entry_points
+    from src.env.env import CustomStockEnv
+    from src.utils.macd_strategy import MACDStrategy
 
 
-    ANNUAL_RISK_FREE_RATE = 0.0456
-
-
-    agent = QLearningAgent(daily_risk_free_rate=ANNUAL_RISK_FREE_RATE / 365)
-
-    agent.save_model()
-    agent.load_model()
+    INITIAL_INVESTMENT = 10_000
 
     env = CustomStockEnv.build_from_symbol(start_date="2019-01-01", end_date="2024-10-31")
-    agent = QLearningAgent()
+    strategy = MACDStrategy(env)
+    strategy.apply_strategy(initial_investment=INITIAL_INVESTMENT)
 
-    data = env.get_data()
-    entry_points = calculate_entry_points(data, "EMA", (50, 200))
+    data = env.data
 
-    total_reward, portfolio, trades = agent.train(data, entry_points, initial_investment=10_000, num_episodes=10_000)
+    # Best parameters -> Learning Rate: 0.77, Gamma: 0.4, Minimum Epsilon: 0.99, Epsilon Decay: 0.12, Minimun Lambda: 0.69, Lambda Decay: 0.889
+    agent = QLearningAgent(
+        env=env,
+        entry_points=strategy.entry_points,
+        alpha=0.77,
+        gamma=0.4,
+        epsilon_min=0.99,
+        epsilon_decay=0.12,
+        lambda_min=0.69,
+        lambda_decay=0.889,
+        symbol_risk_free_rate=strategy.risk)
+    total_reward, portfolio, trades = agent.learn(initial_investment=INITIAL_INVESTMENT, num_episodes=10_000, verbose=True)
 
-    print(f"Trades: {trades}")
-    print()
     print(f"Portfolio final value: {portfolio[-1]}")
     print()
+    print(f"Q-Table: {agent.q_table}")
 
 
     plt.figure(figsize=(10, 6))
     plt.plot(data.index, portfolio[1:], label='Portfolio Value')
     plt.xlabel('Date')
     plt.ylabel('Value')
-    plt.title('Portfolio Performance')
+    plt.title('Rewards')
     plt.legend()
-    plt.grid(True)
-    plt.savefig('portfolio_performance.png')
+    plt.grid()
+    plt.savefig('plots/portfolio_performance.png')
